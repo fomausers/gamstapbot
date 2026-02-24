@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Импортируем функцию поиска из твоей базы
-from database import set_filter, get_filter, find_user_by_username
+from database import set_filter, get_filter, find_user_by_username, get_banlist_data
 
 router = Router()
 scheduler = AsyncIOScheduler()
@@ -109,6 +109,8 @@ async def uncheck_mute(chat_id: int, user_id: int, name: str, bot: Bot):
 
 
 # --- ХЕНДЛЕРЫ ---
+from database import add_to_banlist  # Не забудь импортировать функцию из файла базы
+
 
 @router.message(F.text.lower().regexp(r"^(мут|бан)"))
 async def restrict_handler(message: Message, bot: Bot):
@@ -134,48 +136,50 @@ async def restrict_handler(message: Message, bot: Bot):
     duration = parse_time(message.text)
     until_date = datetime.now() + duration
 
-    # Извлекаем причину: берем весь текст и отрезаем команду и упоминание
-    # Ищем текст после @username или после ID
-    text_parts = message.text.split(maxsplit=3)
-    # Обычно формат: мут 10 мин @user Причина...
-    # Если это реплей: мут 10 мин Причина...
-
+    # Логика извлечения причины
     reason = "Не указана"
-    if len(text_parts) > 2:
-        # Пытаемся найти всё, что идет после упоминания или времени
-        # Самый простой способ — найти последнее вхождение упоминания/времени и взять текст после него
-        full_text = message.text
-        # Ищем, где заканчивается время/юзернейм (примерно)
-        match = re.search(r'(\d+)\s*(мин|час|ден|сут)[а-я]*', full_text.lower())
-        if match:
-            # Берем текст после указания времени и очищаем от возможных упоминаний @user
-            after_time = full_text[match.end():].strip()
-            # Убираем юзернейм из начала причины, если он там есть
-            reason_clean = re.sub(r'^@\w+\s*', '', after_time).strip()
-            if reason_clean:
-                reason = reason_clean
+    match = re.search(r'(\d+)\s*(мин|час|ден|сут)[а-я]*', message.text.lower())
+    if match:
+        after_time = message.text[match.end():].strip()
+        # Убираем юзернейм/ID если он идет после времени
+        reason_clean = re.sub(r'^(@\w+|\d{7,})\s*', '', after_time).strip()
+        if reason_clean:
+            reason = reason_clean
 
     is_ban = message.text.lower().startswith("бан")
 
-    # Считаем минуты для вывода (для краткости)
+    # Форматируем строку времени для вывода (например: 60 мин.)
     total_minutes = int(duration.total_seconds() // 60)
     time_str = f"{total_minutes} мин."
 
     try:
         if is_ban:
+            # Выполняем бан в Telegram
             await bot.ban_chat_member(message.chat.id, target_id, until_date=until_date)
+
+            # Сохраняем в базу данных для команды "банлист"
+            await add_to_banlist(
+                user_id=target_id,
+                user_name=target_name,
+                admin_id=message.from_user.id,
+                admin_name=message.from_user.first_name,
+                duration_str=time_str
+            )
+
             await message.answer(
                 f"🚫 {get_mention(target_id, target_name)} <b>забанен</b> на {time_str}\n"
                 f"<b>Причина:</b>\n<blockquote>{reason}</blockquote>",
                 parse_mode="HTML"
             )
         else:
+            # Выполняем мут
             await bot.restrict_chat_member(
                 message.chat.id, target_id,
                 permissions=ChatPermissions(can_send_messages=False),
                 until_date=until_date
             )
-            # Планируем авто-размут (уведомление)
+
+            # Планируем авто-размут через планировщик
             scheduler.add_job(uncheck_mute, 'date', run_date=until_date,
                               args=[message.chat.id, target_id, target_name, bot])
 
@@ -184,9 +188,10 @@ async def restrict_handler(message: Message, bot: Bot):
                 f"<b>Причина:</b>\n<blockquote>{reason}</blockquote>",
                 parse_mode="HTML"
             )
+
     except Exception as e:
-        logging.error(f"Ошибка: {e}")
-        await message.answer("❌ Ошибка прав. Проверьте, что бот — админ.")
+        logging.error(f"Ошибка в restrict_handler: {e}")
+        await message.answer("❌ Ошибка прав. Проверьте, что бот — администратор с правом блокировки.")
 
 
 @router.message(F.text.lower().startswith(("размут", "разбан")))
@@ -251,6 +256,67 @@ async def delete_sms(message: Message):
             await message.delete()
         except:
             pass
+
+
+from aiogram.types import CallbackQuery
+
+# Константа количества юзеров на страницу
+USERS_PER_PAGE = 25
+
+
+def get_banlist_kb(page: int, total_pages: int):
+    builder = InlineKeyboardBuilder()
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"banlist_page:{page - 1}"))
+    if page < total_pages - 1:
+        buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"banlist_page:{page + 1}"))
+
+    if buttons:
+        builder.row(*buttons)
+    return builder.as_markup()
+
+
+@router.message(Command("банлист"))
+async def show_banlist(message: Message):
+    if not await is_admin(message): return
+    await render_banlist(message, 0)
+
+
+@router.callback_query(F.data.startswith("banlist_page:"))
+async def process_banlist_page(call: CallbackQuery):
+    page = int(call.data.split(":")[1])
+    await render_banlist(call.message, page, is_callback=True)
+    await call.answer()
+
+
+async def render_banlist(message: Message, page: int, is_callback=False):
+    bans = await get_banlist_data()
+    if not bans:
+        text = "<b>Список банов пуст.</b>"
+        return await (
+            message.edit_text(text, parse_mode="HTML") if is_callback else message.answer(text, parse_mode="HTML"))
+
+    total_pages = (len(bans) + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+    start_idx = page * USERS_PER_PAGE
+    end_idx = start_idx + USERS_PER_PAGE
+    curr_bans = bans[start_idx:end_idx]
+
+    text = f"<b>📜 БАН ЛИСТ (Страница {page + 1}/{total_pages})</b>\n\n"
+
+    for i, ban in enumerate(curr_bans, start_idx + 1):
+        u_mention = get_mention(ban['user_id'], ban['user_name'])
+        a_mention = get_mention(ban['admin_id'], ban['admin_name'])
+        text += (f"<b>{i}.</b> забанен {u_mention} (на {ban['duration']})\n"
+                 f"└ администратором {a_mention}\n\n")
+
+    kb = get_banlist_kb(page, total_pages)
+
+    if is_callback:
+        await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
 
 
 @router.message(F.text.lower() == "кто админ")
