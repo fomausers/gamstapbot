@@ -1,6 +1,16 @@
 from aiogram import Router, F
 from aiogram.types import Message
-from database import set_balance, set_ban_status, set_custom_currency, get_currency_symbol, set_tap_emoji, save_custom_emoji, get_all_custom_emojis
+from database import (
+    set_balance,
+    set_ban_status,
+    set_custom_currency,
+    get_currency_symbol,
+    set_tap_emoji,
+    save_custom_emoji,
+    get_all_custom_emojis,
+    delete_user_by_id,
+    get_user_data  # Добавил для проверки существования юзера
+)
 
 router = Router()
 ADMIN_ID = 621856176
@@ -121,6 +131,30 @@ async def admin_show_emoji_list(message: Message):
         text += f"{slot}. {emoji}\n"
 
     await message.answer(text, parse_mode="HTML")
+
+
+@router.message(F.text.lower().startswith("делект"))
+async def admin_delete_user(message: Message):
+    # Проверка на админа (если у тебя есть список админов, добавь проверку)
+    # if message.from_user.id not in ADMIN_IDS: return
+
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await message.answer("Введите ID пользователя. Пример: <code>делект 621856176</code>", parse_mode="HTML")
+
+    target_id = int(parts[1])
+
+    # Проверяем, есть ли такой пользователь перед удалением
+    user_data = await get_user_data(target_id)
+    if not user_data:
+        return await message.answer(f"❌ Пользователь с ID <code>{target_id}</code> не найден в базе.", parse_mode="HTML")
+
+    try:
+        await delete_user_by_id(target_id)
+        await message.answer(f"✅ Пользователь <code>{target_id}</code> успешно удален из базы данных.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"⚠️ Произошла ошибка при удалении: {e}")
+
 
 
 
