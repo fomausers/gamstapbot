@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ВСЕ ИМПОРТЫ ИЗ БАЗЫ В ОДНОМ МЕСТЕ
 from database import (
-    set_filter, get_filter, find_user_by_username, 
+    set_filter, get_filter, find_user_by_username,
     get_banlist_data, add_to_banlist, remove_from_banlist
 )
 
@@ -21,10 +21,12 @@ scheduler = AsyncIOScheduler()
 # Константа количества юзеров на страницу
 USERS_PER_PAGE = 25
 
+
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_mention(user_id: int, name: str):
     return f'<a href="tg://user?id={user_id}">{name}</a>'
+
 
 def parse_time(text: str):
     units = {
@@ -44,6 +46,7 @@ def parse_time(text: str):
             if key == 'ден': return timedelta(days=count)
     return timedelta(hours=1)
 
+
 async def is_admin(message: Message):
     if message.chat.type == "private": return False
     try:
@@ -52,24 +55,32 @@ async def is_admin(message: Message):
     except:
         return False
 
+
 async def get_target(message: Message, bot: Bot):
+    # 1. Сначала проверяем реплей (самый надежный способ)
     if message.reply_to_message:
         return message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name
 
+    # 2. Проверяем сущности (Mentions)
     if message.entities:
         for entity in message.entities:
-            if entity.type == "text_mention":
+            if entity.type == "text_mention":  # Упоминание без юзернейма
                 return entity.user.id, entity.user.first_name
-            if entity.type == "mention":
+            if entity.type == "mention":  # Упоминание через @username
                 username = message.text[entity.offset:entity.offset + entity.length].replace("@", "")
+                # Пробуем найти в БД (самый верный способ для бота)
+                db_user = await find_user_by_username(username)
+                if db_user:
+                    return db_user['user_id'], db_user['full_name']
+
+                # Если в БД нет, пробуем спросить у Telegram (может не сработать)
                 try:
                     chat_member = await bot.get_chat_member(message.chat.id, f"@{username}")
                     return chat_member.user.id, chat_member.user.first_name
                 except:
-                    db_user = await find_user_by_username(username)
-                    if db_user:
-                        return db_user['user_id'], db_user['full_name']
+                    pass
 
+    # 3. Пробуем найти ID в тексте (цифры)
     ids = re.findall(r'\d{7,}', message.text)
     if ids:
         target_id = int(ids[0])
@@ -78,7 +89,9 @@ async def get_target(message: Message, bot: Bot):
             return u.user.id, u.user.first_name
         except:
             return target_id, "Пользователь"
+
     return None, None
+
 
 # --- СИСТЕМА НАКАЗАНИЙ ---
 
@@ -97,6 +110,7 @@ async def uncheck_mute(chat_id: int, user_id: int, name: str, bot: Bot):
     except:
         pass
 
+
 @router.message(F.text.lower().regexp(r"^(мут|бан)"))
 async def restrict_handler(message: Message, bot: Bot):
     if not await is_admin(message): return
@@ -111,7 +125,8 @@ async def restrict_handler(message: Message, bot: Bot):
         member = await message.chat.get_member(target_id)
         if member.status in ["administrator", "creator"]:
             return await message.answer("❌ Нельзя наказывать администраторов.")
-    except: pass
+    except:
+        pass
 
     duration = parse_time(message.text)
     until_date = datetime.now() + duration
@@ -131,11 +146,17 @@ async def restrict_handler(message: Message, bot: Bot):
         if is_ban:
             await bot.ban_chat_member(message.chat.id, target_id, until_date=until_date)
             await add_to_banlist(target_id, target_name, message.from_user.id, message.from_user.first_name, time_str)
-            await message.answer(f"🚫 {get_mention(target_id, target_name)} <b>забанен</b> на {time_str}\n<b>Причина:</b>\n<blockquote>{reason}</blockquote>", parse_mode="HTML")
+            await message.answer(
+                f"🚫 {get_mention(target_id, target_name)} <b>забанен</b> на {time_str}\n<b>Причина:</b>\n<blockquote>{reason}</blockquote>",
+                parse_mode="HTML")
         else:
-            await bot.restrict_chat_member(message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=False), until_date=until_date)
-            scheduler.add_job(uncheck_mute, 'date', run_date=until_date, args=[message.chat.id, target_id, target_name, bot])
-            await message.answer(f"🔇 {get_mention(target_id, target_name)} в муте на {time_str}\n<b>Причина:</b>\n<blockquote>{reason}</blockquote>", parse_mode="HTML")
+            await bot.restrict_chat_member(message.chat.id, target_id,
+                                           permissions=ChatPermissions(can_send_messages=False), until_date=until_date)
+            scheduler.add_job(uncheck_mute, 'date', run_date=until_date,
+                              args=[message.chat.id, target_id, target_name, bot])
+            await message.answer(
+                f"🔇 {get_mention(target_id, target_name)} в муте на {time_str}\n<b>Причина:</b>\n<blockquote>{reason}</blockquote>",
+                parse_mode="HTML")
     except Exception as e:
         await message.answer("❌ Ошибка прав бота.")
 
@@ -203,7 +224,8 @@ async def unmute_unban_handler(message: Message, bot: Bot):
     except Exception as e:
         logging.error(f"Ошибка при снятии наказания: {e}")
         await message.answer("❌ Ошибка выполнения. Проверьте права бота.")
-        
+
+
 # --- БАНЛИСТ С ПАГИНАЦИЕЙ ---
 
 def get_banlist_kb(page: int, total_pages: int):
@@ -214,10 +236,12 @@ def get_banlist_kb(page: int, total_pages: int):
         builder.add(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"banlist_page:{page + 1}"))
     return builder.as_markup()
 
+
 @router.message(Command("банлист"))
 async def show_banlist(message: Message):
     if not await is_admin(message): return
     await render_banlist(message, 0)
+
 
 @router.callback_query(F.data.startswith("banlist_page:"))
 async def process_banlist_page(call: CallbackQuery):
@@ -225,22 +249,27 @@ async def process_banlist_page(call: CallbackQuery):
     await render_banlist(call.message, page, is_callback=True)
     await call.answer()
 
+
 async def render_banlist(message: Message, page: int, is_callback=False):
     bans = await get_banlist_data()
     if not bans:
         text = "<b>Список банов пуст.</b>"
-        return await (message.edit_text(text, parse_mode="HTML") if is_callback else message.answer(text, parse_mode="HTML"))
+        return await (
+            message.edit_text(text, parse_mode="HTML") if is_callback else message.answer(text, parse_mode="HTML"))
 
     total_pages = (len(bans) + USERS_PER_PAGE - 1) // USERS_PER_PAGE
-    curr_bans = bans[page * USERS_PER_PAGE : (page + 1) * USERS_PER_PAGE]
+    curr_bans = bans[page * USERS_PER_PAGE: (page + 1) * USERS_PER_PAGE]
 
     text = f"<b>📜 БАН ЛИСТ (Страница {page + 1}/{total_pages})</b>\n\n"
     for i, ban in enumerate(curr_bans, page * USERS_PER_PAGE + 1):
         text += f"<b>{i}.</b> забанен {get_mention(ban['user_id'], ban['user_name'])} (на {ban['duration']})\n└ админом {get_mention(ban['admin_id'], ban['admin_name'])}\n\n"
 
     kb = get_banlist_kb(page, total_pages)
-    if is_callback: await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    else: await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    if is_callback:
+        await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
 
 # --- ИНФОРМАЦИОННЫЕ КОМАНДЫ ---
 
@@ -254,25 +283,34 @@ async def get_admins_list(message: Message):
         has_admins = False
         for admin in human_admins:
             mention = get_mention(admin.user.id, admin.user.first_name)
-            if isinstance(admin, ChatMemberOwner): owner_text += f"👨🏻‍💼 {mention}\n"
+            if isinstance(admin, ChatMemberOwner):
+                owner_text += f"👨🏻‍💼 {mention}\n"
             else:
                 admins_text += f"🦸 {mention}\n"
                 has_admins = True
         res = f"<b>Администрация {message.chat.title}</b>\n\n{owner_text}"
         if has_admins: res += admins_text
         await message.answer(res, parse_mode="HTML")
-    except: await message.answer("❌ Ошибка.")
+    except:
+        await message.answer("❌ Ошибка.")
+
 
 @router.message(Command("help", "помощь"))
 async def cmd_help(message: Message):
-    await message.answer("<b>🛠 Список команд:</b>\n\n• <code>мут 10 мин @user</code>\n• <code>бан 1 час @user</code>\n• <code>размут/разбан</code>\n• <code>банлист</code>\n• <code>кто админ</code>", parse_mode="HTML")
+    await message.answer(
+        "<b>🛠 Список команд:</b>\n\n• <code>мут 10 мин @user</code>\n• <code>бан 1 час @user</code>\n• <code>размут/разбан</code>\n• <code>банлист</code>\n• <code>кто админ</code>",
+        parse_mode="HTML")
+
 
 # --- ФИЛЬТРЫ И СЕРВИСНЫЕ СООБЩЕНИЯ ---
 
 @router.message(F.new_chat_members | F.left_chat_member)
 async def clean_service_messages(message: Message):
-    try: await message.delete()
-    except: pass
+    try:
+        await message.delete()
+    except:
+        pass
+
 
 @router.message(F.text.in_(["-чаты", "+чаты"]))
 async def toggle_filters(message: Message):
@@ -280,6 +318,7 @@ async def toggle_filters(message: Message):
     val = 1 if message.text == "-чаты" else 0
     await set_filter(message.chat.id, "anti_link", val)
     await message.answer("🚫 Ссылки запрещены." if val else "✅ Ссылки разрешены.")
+
 
 @router.message(F.chat.type.in_(["group", "supergroup"]))
 async def check_filters(message: Message, bot: Bot):
@@ -289,9 +328,13 @@ async def check_filters(message: Message, bot: Bot):
             try:
                 await message.delete()
                 until = datetime.now() + timedelta(minutes=15)
-                await bot.restrict_chat_member(message.chat.id, message.from_user.id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
-                scheduler.add_job(uncheck_mute, 'date', run_date=until, args=[message.chat.id, message.from_user.id, message.from_user.first_name, bot])
-            except: pass
+                await bot.restrict_chat_member(message.chat.id, message.from_user.id,
+                                               permissions=ChatPermissions(can_send_messages=False), until_date=until)
+                scheduler.add_job(uncheck_mute, 'date', run_date=until,
+                                  args=[message.chat.id, message.from_user.id, message.from_user.first_name, bot])
+            except:
+                pass
+
 
 @router.message(Command("help", "помощь"))
 async def cmd_help(message: Message):
@@ -318,4 +361,3 @@ async def cmd_help(message: Message):
     )
 
     await message.answer(help_text, parse_mode="HTML")
-
