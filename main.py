@@ -7,7 +7,7 @@ from typing import Callable, Dict, Any, Awaitable
 # Импорты БД
 from database import init_db, check_user, get_user_data
 
-# Импорты роутеров основного бота
+# Импорты роутеров ОСНОВНОГО БОТА
 from handlers import router
 from perett import router as perett_router
 from dmin import router as admin_router
@@ -20,12 +20,16 @@ from donate import donate_router
 from profile import router as profile_router
 from bask import router as bask_router
 
-# Импорт роутера саппорт-бота
+# Импорт роутера САППОРТ-БОТА
 from saport import router as saport_router
+
+# Импорт роутера и планировщика МОДЕРАТОР-БОТА
+from moder import router as moder_router, scheduler
 
 # --- КОНФИГ ТОКЕНОВ ---
 MAIN_TOKEN = "8535768087:AAF9D6Sm4hVIYGgaGLA9h8qGvrfSFI5hrmk"
-SUPPORT_TOKEN = "8203910368:AAH4BSgNWJMpqLw3ZE7lieVwej1rzOjNrGA"  # Вставьте сюда токен саппорт-бота
+SUPPORT_TOKEN = "8203910368:AAH4BSgNWJMpqLw3ZE7lieVwej1rzOjNrGA"
+MODER_TOKEN = "8067480276:AAGU9ZdRLxPZIF3_IePmXN8pb-CrZRFhMgA"  # Вставь токен именно для модератора
 
 
 # --- Глобальная мидлварь (для основного бота) ---
@@ -54,10 +58,13 @@ async def main():
     # 1. Инициализация общей БД
     await init_db()
 
+    # 2. Запуск планировщика для авто-размутов
+    if not scheduler.running:
+        scheduler.start()
+
     # --- НАСТРОЙКА ОСНОВНОГО БОТА ---
     main_bot = Bot(token=MAIN_TOKEN)
     main_dp = Dispatcher()
-
     main_dp.message.outer_middleware(GlobalCheckMiddleware())
 
     main_dp.include_router(start_router)
@@ -75,26 +82,33 @@ async def main():
     # --- НАСТРОЙКА САППОРТ БОТА ---
     support_bot = Bot(token=SUPPORT_TOKEN)
     support_dp = Dispatcher()
-
-    # Подключаем только файл saport.py
     support_dp.include_router(saport_router)
 
-    print("✅ Оба бота запущены!")
+    # --- НАСТРОЙКА МОДЕРАТОР БОТА ---
+    moder_bot = Bot(token=MODER_TOKEN)
+    moder_dp = Dispatcher()
+    moder_dp.include_router(moder_router)
 
-    # Запускаем обоих ботов одновременно
-    # Бот 1 (Main) и Бот 2 (Support) будут работать параллельно
+    print("🚀 Все три бота подготавливаются к запуску...")
+
+    # Запускаем всех ботов одновременно через polling
     try:
         await asyncio.gather(
             main_dp.start_polling(main_bot),
-            support_dp.start_polling(support_bot)
+            support_dp.start_polling(support_bot),
+            moder_dp.start_polling(moder_bot)
         )
     finally:
+        # Корректное закрытие сессий
         await main_bot.session.close()
         await support_bot.session.close()
+        await moder_bot.session.close()
+        if scheduler.running:
+            scheduler.shutdown()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Боты остановлены.")
+        print("🛑 Все боты остановлены.")
