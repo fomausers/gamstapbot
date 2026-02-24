@@ -277,7 +277,7 @@ def get_banlist_kb(page: int, total_pages: int):
     return builder.as_markup()
 
 
-@router.message(Command("банлист"))
+@router.message(Command("лист"))
 async def show_banlist(message: Message):
     if not await is_admin(message): return
     await render_banlist(message, 0)
@@ -409,4 +409,5 @@ async def cmd_help(message: Message):
     )
 
     await message.answer(help_text, parse_mode="HTML")
+
 
