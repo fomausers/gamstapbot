@@ -98,7 +98,7 @@ async def process_bonus_callback(callback: CallbackQuery):
         await callback.message.edit_text(
             f"{mention}\n"
             f"<b>🌕 баланс: {formatted_balance} cron</b>\n\n"
-            f" <b>2 500 cron</b> зачислено!",
+            f" <b>5 000 cron</b> зачислено!",
             parse_mode="HTML"
         )
         await callback.answer("💰 Бонус получен!")
@@ -112,4 +112,5 @@ async def process_bonus_callback(callback: CallbackQuery):
 # 2. Эхо-заглушка
 @router.message()
 async def echo_all(message: Message):
+
     logging.info(f"Текст получен: {message.text}")
