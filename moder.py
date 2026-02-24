@@ -257,14 +257,34 @@ async def delete_sms(message: Message):
 async def get_admins_list(message: Message):
     try:
         admins = await message.chat.get_administrators()
+        # Фильтруем только людей
         human_admins = [admin for admin in admins if not admin.user.is_bot]
-        text = f"<b>Администрация {message.chat.title}:</b>\n\n"
+
+        owner_text = "⭐⭐⭐⭐⭐ <b>Создатель</b>\n"
+        admins_text = "\n⭐⭐⭐⭐ <b>Администраторы</b>\n"
+
+        has_admins = False
+
         for admin in human_admins:
-            status = "👑 Создатель" if isinstance(admin, ChatMemberOwner) else "🛡️ Админ"
-            text += f"{status} — {get_mention(admin.user.id, admin.user.first_name)}\n"
-        await message.answer(text, parse_mode="HTML")
-    except:
-        await message.answer("❌ Ошибка получения списка.")
+            mention = get_mention(admin.user.id, admin.user.first_name)
+
+            if isinstance(admin, ChatMemberOwner):
+                owner_text += f"👨🏻‍💼 {mention}\n"
+            else:
+                admins_text += f"🦸 {mention}\n"
+                has_admins = True
+
+        # Собираем итоговое сообщение
+        full_text = f"<b>Администрация чата {message.chat.title}</b>\n\n"
+        full_text += owner_text
+
+        if has_admins:
+            full_text += admins_text
+
+        await message.answer(full_text, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Ошибка в списке админов: {e}")
+        await message.answer("❌ Ошибка получения списка. Проверьте мои права.")
 
 
 @router.message(F.text.in_(["-чаты", "+чаты", "-каналы", "+каналы"]))
