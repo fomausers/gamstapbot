@@ -121,7 +121,7 @@ async def update_bonus_time(user_id, time_str):
         # Проверяем, существует ли пользователь, прежде чем обновлять
         # Это предотвратит ошибки логики
         await db.execute(
-            "UPDATE users SET last_bonus = ?, balance = balance + 5000 WHERE user_id = ?", 
+            "UPDATE users SET last_bonus = ?, balance = balance + 5000 WHERE user_id = ?",
             (time_str, user_id)
         )
         await db.commit()
@@ -335,3 +335,67 @@ async def get_currency_symbol():
         except Exception:
             return "🌕"
 
+
+
+async def set_filter(chat_id: int, filter_type: str, value: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS chat_filters 
+            (chat_id INTEGER, filter_type TEXT, value INTEGER, PRIMARY KEY (chat_id, filter_type))
+        ''')
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_filters (chat_id, filter_type, value) VALUES (?, ?, ?)",
+            (chat_id, filter_type, value)
+        )
+        await db.commit()
+
+async def get_filter(chat_id: int, filter_type: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            async with db.execute("SELECT value FROM chat_filters WHERE chat_id = ? AND filter_type = ?",
+                                 (chat_id, filter_type)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0 # По умолчанию выключено (разрешено)
+        except:
+            return 0
+
+
+
+# --- ФУНКЦИИ ПОИСКА ПОЛЬЗОВАТЕЛЕЙ ---
+
+async def find_user_by_username(username: str):
+    """Поиск пользователя по точному юзернейму (без @)"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Убираем @ если пользователь его ввел
+        clean_username = username.replace("@", "")
+        async with db.execute("SELECT * FROM users WHERE username = ?", (clean_username,)) as cursor:
+            return await cursor.fetchone()
+
+async def search_users_by_name(query: str):
+    """Поиск списка пользователей по частичному совпадению имени или юзернейма"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        search_query = f"%{query}%"
+        async with db.execute(
+            "SELECT * FROM users WHERE username LIKE ? OR full_name LIKE ? LIMIT 10",
+            (search_query, search_query)
+        ) as cursor:
+            return await cursor.fetchall()
+
+async def get_all_users_count():
+    """Получить общее количество игроков в базе"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+async def get_top_rich(limit: int = 10):
+    """Получить топ богатых игроков"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users ORDER BY balance DESC LIMIT ?",
+            (limit,)
+        ) as cursor:
+            return await cursor.fetchall()
