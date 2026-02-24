@@ -17,16 +17,6 @@ class DepositState(StatesGroup):
 
 # --- ТЕХНИЧЕСКИЕ ФУНКЦИИ ---
 
-async def set_user_language(user_id: int, lang: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'none'")
-        except:
-            pass
-        await db.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
-        await db.commit()
-
-
 def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{name}</a>'
 
@@ -49,24 +39,15 @@ async def format_emoji(slot):
 
 # --- КЛАВИАТУРЫ ---
 
-def get_profile_kb(lang: str):
+def get_profile_kb(lang: str = "rus"):
     support_url = "https://t.me/hhikasi"
-    if lang == "ukr":
-        btns = [
-            [InlineKeyboardButton(text="💰 Поповнити", callback_data=f"deposit:{lang}")],
-            [InlineKeyboardButton(text="📝 Перекази", callback_data=f"my_transfers:{lang}"),
-             InlineKeyboardButton(text="🛡️ Статус", callback_data=f"check_status:{lang}")],
-            [InlineKeyboardButton(text="👥 Користувачі", callback_data=f"user_list:{lang}")],
-            [InlineKeyboardButton(text="🆘 Підтримка", url=support_url)]
-        ]
-    else:
-        btns = [
-            [InlineKeyboardButton(text="💰 Пополнить", callback_data=f"deposit:{lang}")],
-            [InlineKeyboardButton(text="📝 Переводы", callback_data=f"my_transfers:{lang}"),
-             InlineKeyboardButton(text="🛡️ Статус", callback_data=f"check_status:{lang}")],
-            [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"user_list:{lang}")],
-            [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)]
-        ]
+    btns = [
+        [InlineKeyboardButton(text="💰 Пополнить", callback_data=f"deposit:{lang}")],
+        [InlineKeyboardButton(text="📝 Переводы", callback_data=f"my_transfers:{lang}"),
+         InlineKeyboardButton(text="🛡️ Статус", callback_data=f"check_status:{lang}")],
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"user_list:{lang}")],
+        [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)]
+    ]
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
 
@@ -75,21 +56,13 @@ def get_profile_kb(lang: str):
 @router.message(Command("start"))
 async def start_handler(message: Message):
     user_id = message.from_user.id
+    # Регистрируем/проверяем пользователя
     await check_user(user_id, message.from_user.username, message.from_user.full_name)
-    user = await get_user_data(user_id)
-    user_lang = user['language'] if user and 'language' in user.keys() else 'none'
-
-    if user_lang and user_lang != 'none':
-        await show_profile(message, user_id, user_lang)
-    else:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🇺🇦 Українська", callback_data="set_lang:ukr"),
-            InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang:rus")
-        ]])
-        await message.answer("Выбирите язык / Оберіть мову:", reply_markup=kb)
+    # Сразу показываем профиль без выбора языка
+    await show_profile(message, user_id, "rus")
 
 
-async def show_profile(event: Message | CallbackQuery, user_id: int, lang: str, is_new_message: bool = False):
+async def show_profile(event: Message | CallbackQuery, user_id: int, lang: str = "rus", is_new_message: bool = False):
     user = await get_user_data(user_id)
 
     emoji_prof = await format_emoji(1)  # Слот 1: 👋 Рука
@@ -99,19 +72,16 @@ async def show_profile(event: Message | CallbackQuery, user_id: int, lang: str, 
     balance_val = user['balance'] if user else 0
     formatted_balance = f"{balance_val:,}".replace(',', ' ')
 
-    text = (f"{emoji_prof} {'Профіль' if lang == 'ukr' else 'Профиль'} {name}\n"
+    text = (f"{emoji_prof} Профиль {name}\n"
             f"🆔 ID: <code>{user_id}</code>\n"
-            f"{cur_symbol} {'Баланс' if lang == 'ukr' else 'Баланс'}: <b>{formatted_balance}</b>")
+            f"{cur_symbol} Баланс: <b>{formatted_balance}</b>")
 
-    # Если это CallbackQuery и мы НЕ удаляли сообщение ранее
     if isinstance(event, CallbackQuery) and not is_new_message:
         try:
             await event.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
         except Exception:
-            # Если редактирование не удалось (сообщение удалено), отправляем новое
             await event.message.answer(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
     else:
-        # Если это Message или мы явно просим новое сообщение
         if isinstance(event, CallbackQuery):
             await event.message.answer(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
         else:
@@ -128,14 +98,9 @@ async def show_user_list(callback: CallbackQuery):
     emoji_active = await format_emoji(3)  # Слот 3: 🟢 Зеленый
     emoji_banned = await format_emoji(4)  # Слот 4: 🔴 Красный
 
-    if lang == "ukr":
-        txt = (f"{emoji_title} <b>Статистика користувачів:</b>\n"
-               f"{emoji_active} Кількість активних: <b>{active}</b>\n"
-               f"{emoji_banned} Кількість в бані: <b>{banned}</b>")
-    else:
-        txt = (f"{emoji_title} <b>Статистика пользователей:</b>\n"
-               f"{emoji_active} Количество активных: <b>{active}</b>\n"
-               f"{emoji_banned} Количество в бане: <b>{banned}</b>")
+    txt = (f"{emoji_title} <b>Статистика пользователей:</b>\n"
+           f"{emoji_active} Количество активных: <b>{active}</b>\n"
+           f"{emoji_banned} Количество в бане: <b>{banned}</b>")
 
     back_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back_to_profile:{lang}")
@@ -154,10 +119,9 @@ async def show_transfers(callback: CallbackQuery):
     main_mention = get_mention(user_id, callback.from_user.first_name)
 
     if not history:
-        content = f"{main_mention}, ваша історія порожня." if lang == "ukr" else f"{main_mention}, ваша история пуста."
+        content = f"{main_mention}, ваша история пуста."
     else:
-        lines = [
-            f"{main_mention} ваша історія переказів:" if lang == "ukr" else f"{main_mention} ваша история переводов:"]
+        lines = [f"{main_mention} ваша история переводов:"]
         for row in history:
             amount = row['amount']
             raw_time = row['timestamp']
@@ -187,7 +151,7 @@ async def show_transfers(callback: CallbackQuery):
 async def deposit_start(callback: CallbackQuery, state: FSMContext):
     lang = callback.data.split(":")[1]
     await state.update_data(lang=lang)
-    txt = "Введите сумму (Stars):" if lang == "rus" else "Введіть суму (Stars):"
+    txt = "Введите сумму (Stars):"
 
     cancel_btn = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_deposit:{lang}")]])
@@ -202,22 +166,18 @@ async def cancel_deposit(callback: CallbackQuery, state: FSMContext):
     lang = callback.data.split(":")[1]
     data = await state.get_data()
 
-    # 1. Удаляем сообщение с инвойсом, если оно было
     if "invoice_msg_id" in data:
         try:
             await callback.bot.delete_message(callback.message.chat.id, data["invoice_msg_id"])
         except Exception:
             pass
 
-    # 2. Удаляем само сообщение "Введите сумму"
     try:
         await callback.message.delete()
     except Exception:
         pass
 
     await state.clear()
-
-    # 3. Вызываем профиль, передавая флаг is_new_message=True
     await show_profile(callback, callback.from_user.id, lang, is_new_message=True)
     await callback.answer()
 
@@ -225,7 +185,7 @@ async def cancel_deposit(callback: CallbackQuery, state: FSMContext):
 @router.message(DepositState.waiting_for_amount)
 async def send_invoice(message: Message, state: FSMContext):
     if not message.text or not message.text.isdigit():
-        return await message.answer("Число!")
+        return await message.answer("Введите число!")
 
     stars = int(message.text)
     cron = stars * 2500
@@ -236,7 +196,6 @@ async def send_invoice(message: Message, state: FSMContext):
         prices=[LabeledPrice(label="XTR", amount=stars)],
         provider_token="", currency="XTR", payload=f"stars_{stars}"
     )
-    # Сохраняем ID, чтобы удалить при отмене
     await state.update_data(invoice_msg_id=inv_msg.message_id)
 
 
@@ -250,6 +209,8 @@ async def success_pay(message: Message):
     stars = message.successful_payment.total_amount
     cron = stars * 2500
     await add_balance(message.from_user.id, cron)
+    # Примечание: Убедись, что функция add_donation импортирована корректно
+    from database import add_donation
     await add_donation(message.from_user.id, message.successful_payment.telegram_payment_charge_id, cron, stars)
     try:
         await message.delete()
