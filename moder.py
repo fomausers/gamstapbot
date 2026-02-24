@@ -139,24 +139,71 @@ async def restrict_handler(message: Message, bot: Bot):
     except Exception as e:
         await message.answer("❌ Ошибка прав бота.")
 
+
 @router.message(F.text.lower().startswith(("размут", "разбан")))
 async def unmute_unban_handler(message: Message, bot: Bot):
     if not await is_admin(message): return
+
     target_id, target_name = await get_target(message, bot)
-    if not target_id: return await message.answer("❓ Кого освобождаем?")
+    if not target_id:
+        return await message.answer("❓ <b>Кого освобождаем?</b>\nИспользуйте реплей или @юзер", parse_mode="HTML")
+
+    user_mention = get_mention(target_id, target_name)
+    is_unban = "разбан" in message.text.lower()
+
+    # --- ПРОВЕРКА ТЕКУЩЕГО СТАТУСА ---
+    try:
+        member = await bot.get_chat_member(message.chat.id, target_id)
+
+        if is_unban:
+            # Если статус не 'kicked' (забанен), значит он не в бане
+            if member.status != "kicked":
+                return await message.answer(f"ℹ️ {user_mention} пользователь не является в бане", parse_mode="HTML")
+        else:
+            # Если это обычный участник и у него есть право слать сообщения — он не в муте
+            # (Статус 'restricted' означает наличие ограничений)
+            if member.status != "restricted" or getattr(member, 'can_send_messages', True):
+                return await message.answer(f"ℹ️ {user_mention} пользователь не в муте", parse_mode="HTML")
+
+    except Exception as e:
+        # Если пользователя никогда не было в чате, Telegram может выдать ошибку
+        logging.warning(f"Не удалось проверить статус при разбане: {e}")
+
+    # --- ПАРСИНГ ПРИЧИНЫ ---
+    clean_text = re.sub(r'^(размут|разбан)', '', message.text, flags=re.IGNORECASE).strip()
+    clean_text = re.sub(r'^(@\w+|\d{7,})\s*', '', clean_text).strip()
+
+    reason = clean_text if clean_text else "Причина не указана"
 
     try:
-        if "разбан" in message.text.lower():
+        if is_unban:
             await bot.unban_chat_member(message.chat.id, target_id, only_if_banned=True)
-            await remove_from_banlist(target_id) # ТЕПЕРЬ УДАЛЯЕТ ИЗ СПИСКА
-            res = "разбанен"
+            await remove_from_banlist(target_id)
+            res_action = "разбанен"
+            emoji = "🦸‍♂️"
         else:
-            await bot.restrict_chat_member(message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=True, can_send_other_messages=True, can_send_polls=True, can_send_audios=True, can_send_documents=True, can_send_photos=True, can_send_videos=True, can_add_web_page_previews=True))
-            res = "размучен"
-        await message.answer(f"🦸‍♂️ {get_mention(target_id, target_name)} {res}!", parse_mode="HTML")
-    except:
-        await message.answer("❌ Ошибка выполнения.")
+            await bot.restrict_chat_member(
+                message.chat.id, target_id,
+                permissions=ChatPermissions(
+                    can_send_messages=True, can_send_other_messages=True, can_send_polls=True,
+                    can_send_audios=True, can_send_documents=True, can_send_photos=True,
+                    can_send_videos=True, can_add_web_page_previews=True
+                )
+            )
+            res_action = "размучен"
+            emoji = "🔊"
 
+        admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+
+        await message.answer(
+            f"{emoji} {user_mention} {res_action} администратором {admin_mention}\n"
+            f"<b>Причина:</b>\n<blockquote>{reason}</blockquote>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при снятии наказания: {e}")
+        await message.answer("❌ Ошибка выполнения. Проверьте права бота.")
+        
 # --- БАНЛИСТ С ПАГИНАЦИЕЙ ---
 
 def get_banlist_kb(page: int, total_pages: int):
