@@ -2,7 +2,7 @@ import aiosqlite
 import json
 from datetime import datetime
 
-DB_PATH = 'game_base.db'
+DB_PATH = '/app/data/game_base.db'
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -334,3 +334,4 @@ async def get_currency_symbol():
                 return row[0] if row else "🌕"
         except Exception:
             return "🌕"
+
