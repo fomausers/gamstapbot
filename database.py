@@ -213,7 +213,10 @@ async def set_ban_status(user_id: int, status: int):
         await db.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id))
         await db.commit()
 
-
+async def delete_user_by_id(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        await db.commit()
 
 async def add_donation(user_id, charge_id, cron_amount, stars_amount):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -324,4 +327,6 @@ async def get_currency_symbol():
                 # Если в базе что-то есть — возвращаем, если нет — возвращаем стандарт (Луну)
                 return row[0] if row else "🌕"
         except Exception:
+            return "🌕"
+
             return "🌕"
