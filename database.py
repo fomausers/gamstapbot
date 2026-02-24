@@ -2,7 +2,7 @@ import aiosqlite
 import json
 from datetime import datetime
 
-DB_PATH = '/app/data/game_base.db'
+DB_PATH = 'game_base.db'
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -117,7 +117,7 @@ async def get_last_bonus(user_id):
 
 async def update_bonus_time(user_id, time_str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET last_bonus = ?, balance = balance + 2500 WHERE user_id = ?", (time_str, user_id))
+        await db.execute("UPDATE users SET last_bonus = ?, balance = balance + 5000 WHERE user_id = ?", (time_str, user_id))
         await db.commit()
 
 # --- ФУНКЦИИ ПЕРЕВОДОВ ---
@@ -328,5 +328,3 @@ async def get_currency_symbol():
                 return row[0] if row else "🌕"
         except Exception:
             return "🌕"
-
-
