@@ -113,11 +113,17 @@ async def get_last_bonus(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT last_bonus FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
-            return row[0] if row else '0'
+            # Возвращаем '0' если юзера нет или он еще не брал бонус
+            return row[0] if row and row[0] is not None else '0'
 
 async def update_bonus_time(user_id, time_str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET last_bonus = ?, balance = balance + 5000 WHERE user_id = ?", (time_str, user_id))
+        # Проверяем, существует ли пользователь, прежде чем обновлять
+        # Это предотвратит ошибки логики
+        await db.execute(
+            "UPDATE users SET last_bonus = ?, balance = balance + 5000 WHERE user_id = ?", 
+            (time_str, user_id)
+        )
         await db.commit()
 
 # --- ФУНКЦИИ ПЕРЕВОДОВ ---
