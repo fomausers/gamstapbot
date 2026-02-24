@@ -1,15 +1,16 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher
-from database import init_db, check_user, get_user_data  # Импортируем нужные функции БД
+from aiogram import Bot, Dispatcher, BaseMiddleware
+from aiogram.types import Message, TelegramObject
+from typing import Callable, Dict, Any, Awaitable
+
+# Импорты БД
+from database import init_db, check_user, get_user_data
+
+# Импорты роутеров основного бота
 from handlers import router
 from perett import router as perett_router
 from dmin import router as admin_router
-
-# Импорты для мидлвари
-from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject
-from typing import Callable, Dict, Any, Awaitable
 from bonus import router as bonus_router
 from roulette import router as roulette_router
 from start import router as start_router
@@ -19,11 +20,15 @@ from donate import donate_router
 from profile import router as profile_router
 from bask import router as bask_router
 
+# Импорт роутера саппорт-бота
+from saport import router as saport_router
 
-TOKEN = "8535768087:AAF9D6Sm4hVIYGgaGLA9h8qGvrfSFI5hrmk"
+# --- КОНФИГ ТОКЕНОВ ---
+MAIN_TOKEN = "8535768087:AAF9D6Sm4hVIYGgaGLA9h8qGvrfSFI5hrmk"
+SUPPORT_TOKEN = "8203910368:AAH4BSgNWJMpqLw3ZE7lieVwej1rzOjNrGA"  # Вставьте сюда токен саппорт-бота
 
 
-# --- Глобальная мидлварь ---
+# --- Глобальная мидлварь (для основного бота) ---
 class GlobalCheckMiddleware(BaseMiddleware):
     async def __call__(
             self,
@@ -31,57 +36,65 @@ class GlobalCheckMiddleware(BaseMiddleware):
             event: Message,
             data: Dict[str, Any]
     ) -> Any:
-        # Проверяем только сообщения
         if isinstance(event, Message) and event.from_user:
-            # 1. Авто-регистрация
             await check_user(
                 user_id=event.from_user.id,
                 username=event.from_user.username,
                 full_name=event.from_user.full_name
             )
-
-            # 2. Проверка на бан
             user = await get_user_data(event.from_user.id)
             if user and user['is_banned']:
-                # Если забанен — просто игнорируем (прерываем выполнение)
                 return
-
         return await handler(event, data)
 
-
-# ---------------------------
 
 async def main():
     logging.basicConfig(level=logging.INFO)
 
-    # Инициализируем БД
+    # 1. Инициализация общей БД
     await init_db()
 
-    bot = Bot(token=TOKEN)
-    dp = Dispatcher()
+    # --- НАСТРОЙКА ОСНОВНОГО БОТА ---
+    main_bot = Bot(token=MAIN_TOKEN)
+    main_dp = Dispatcher()
 
-    # Подключаем глобальную мидлварь ко всем сообщениям
-    dp.message.outer_middleware(GlobalCheckMiddleware())
+    main_dp.message.outer_middleware(GlobalCheckMiddleware())
 
-    # Подключаем роутеры (порядок важен: сначала админ, потом остальные)
-    dp.include_router(start_router)
-    dp.include_router(admin_router)
-    dp.include_router(perett_router)
-    dp.include_router(bonus_router)
-    dp.include_router(roulette_router)
-    dp.include_router(mines_router)
-    dp.include_router(bask_router)
-    dp.include_router(help_router)
-    dp.include_router(donate_router)
-    dp.include_router(profile_router)
-    dp.include_router(router)
+    main_dp.include_router(start_router)
+    main_dp.include_router(admin_router)
+    main_dp.include_router(perett_router)
+    main_dp.include_router(bonus_router)
+    main_dp.include_router(roulette_router)
+    main_dp.include_router(mines_router)
+    main_dp.include_router(bask_router)
+    main_dp.include_router(help_router)
+    main_dp.include_router(donate_router)
+    main_dp.include_router(profile_router)
+    main_dp.include_router(router)
 
-    print("Бот запущен!")
-    await dp.start_polling(bot)
+    # --- НАСТРОЙКА САППОРТ БОТА ---
+    support_bot = Bot(token=SUPPORT_TOKEN)
+    support_dp = Dispatcher()
+
+    # Подключаем только файл saport.py
+    support_dp.include_router(saport_router)
+
+    print("✅ Оба бота запущены!")
+
+    # Запускаем обоих ботов одновременно
+    # Бот 1 (Main) и Бот 2 (Support) будут работать параллельно
+    try:
+        await asyncio.gather(
+            main_dp.start_polling(main_bot),
+            support_dp.start_polling(support_bot)
+        )
+    finally:
+        await main_bot.session.close()
+        await support_bot.session.close()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        print("Боты остановлены.")
