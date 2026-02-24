@@ -399,3 +399,34 @@ async def get_top_rich(limit: int = 10):
             (limit,)
         ) as cursor:
             return await cursor.fetchall()
+
+
+
+async def add_to_banlist(user_id, user_name, admin_id, admin_name, duration_str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS ban_history (
+                user_id INTEGER PRIMARY KEY,
+                user_name TEXT,
+                admin_id INTEGER,
+                admin_name TEXT,
+                duration TEXT,
+                ban_date DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute(
+            "INSERT OR REPLACE INTO ban_history (user_id, user_name, admin_id, admin_name, duration) VALUES (?, ?, ?, ?, ?)",
+            (user_id, user_name, admin_id, admin_name, duration_str)
+        )
+        await db.commit()
+
+async def get_banlist_data():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM ban_history ORDER BY ban_date DESC") as cursor:
+            return await cursor.fetchall()
+
+async def remove_from_banlist(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM ban_history WHERE user_id = ?", (user_id,))
+        await db.commit()
