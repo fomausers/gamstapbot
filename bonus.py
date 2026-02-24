@@ -1,14 +1,12 @@
 from aiogram import Router, F
 from aiogram.types import Message
-from database import get_last_bonus, update_bonus_time, get_user_data
+from database import get_last_bonus, update_bonus_time, get_user_data, get_currency_symbol # Добавили импорт
 from datetime import datetime, timedelta
 
 router = Router()
 
-
 def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{name}</a>'
-
 
 # Реагирует и на "бонус", и на кнопку "🎁 Бонус"
 @router.message((F.text.lower() == "бонус") | (F.text == "🎁 Бонус"))
@@ -19,20 +17,20 @@ async def get_daily_bonus(message: Message):
     now = datetime.now()
     last_bonus_str = await get_last_bonus(user_id)
 
+    # Получаем текущий символ валюты из базы
+    cur_symbol = await get_currency_symbol()
+
     # Если в базе '0', значит бонус еще никогда не брали
     if last_bonus_str != '0':
         try:
             last_bonus_time = datetime.strptime(last_bonus_str, "%d.%m.%Y %H:%M:%S")
         except ValueError:
-            # На случай, если в базе старый формат даты (без секунд)
             last_bonus_time = datetime.strptime(last_bonus_str, "%d.%m.%Y %H:%M")
 
         next_bonus_time = last_bonus_time + timedelta(hours=24)
 
         if now < next_bonus_time:
-            # Вычисляем разницу
             remaining = next_bonus_time - now
-            # Используем total_seconds, чтобы часы не обнулялись после 24
             total_seconds = int(remaining.total_seconds())
             hours = total_seconds // 3600
             minutes = (total_seconds % 3600) // 60
@@ -43,17 +41,19 @@ async def get_daily_bonus(message: Message):
                 parse_mode="HTML"
             )
 
-    # Выдаем бонус
+    # Выдаем бонус (в базе прибавится 5000)
     new_time_str = now.strftime("%d.%m.%Y %H:%M:%S")
     await update_bonus_time(user_id, new_time_str)
 
     # Получаем свежие данные, чтобы показать баланс
     user = await get_user_data(user_id)
-    balance = user['balance'] if user else 5000
+    balance_val = user['balance'] if user else 0
+    
+    # Форматируем баланс (красивые пробелы)
+    formatted_balance = f"{balance_val:,}".replace(',', ' ')
 
     await message.answer(
-        f"{mention}, вам начислено <b>5000 cron</b>! 🎁\n"
-        f"Ваш баланс: <b>{balance} cron</b>",
+        f"{mention}, вам начислено <b>5 000 {cur_symbol}</b>! 🎁\n"
+        f"Ваш баланс: <b>{formatted_balance} {cur_symbol}</b>",
         parse_mode="HTML"
-
     )
