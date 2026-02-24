@@ -49,10 +49,11 @@ async def get_daily_bonus(message: Message):
 
     # Получаем свежие данные, чтобы показать баланс
     user = await get_user_data(user_id)
-    balance = user['balance'] if user else 2500
+    balance = user['balance'] if user else 5000
 
     await message.answer(
-        f"{mention}, вам начислено <b>2500 cron</b>! 🎁\n"
+        f"{mention}, вам начислено <b>5000 cron</b>! 🎁\n"
         f"Ваш баланс: <b>{balance} cron</b>",
         parse_mode="HTML"
+
     )
