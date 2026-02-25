@@ -1,9 +1,10 @@
+import asyncio
+import re
+import logging
+from datetime import datetime, timedelta
 from aiogram import Router, F
-from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                           InlineKeyboardButton, LabeledPrice, PreCheckoutQuery)
+from aiogram.types import (Message, LabeledPrice, PreCheckoutQuery)
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from database import (get_user_data, get_currency_symbol, check_user,
                       DB_PATH, get_emoji_by_slot, get_history, add_balance, add_donation)
 import aiosqlite
@@ -11,11 +12,7 @@ import aiosqlite
 router = Router()
 
 
-class DepositState(StatesGroup):
-    waiting_for_amount = State()
-
-
-# --- ТЕХНИЧЕСКИЕ ФУНКЦИИ ---
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{name}</a>'
@@ -37,166 +34,116 @@ async def format_emoji(slot):
     return code if code else "🔹"
 
 
-# --- КЛАВИАТУРЫ ---
+# --- ОСНОВНОЙ ХЕНДЛЕР (ПРОФИЛЬ) ---
 
-def get_profile_kb(lang: str = "rus"):
-    support_url = "https://t.me/hhikasi"
-    btns = [
-        [InlineKeyboardButton(text="💰 Пополнить", callback_data=f"deposit:{lang}")],
-        [InlineKeyboardButton(text="📝 Переводы", callback_data=f"my_transfers:{lang}"),
-         InlineKeyboardButton(text="🛡️ Статус", callback_data=f"check_status:{lang}")],
-        [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"user_list:{lang}")],
-        [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=btns)
-
-
-# --- ХЕНДЛЕРЫ ПРОФИЛЯ ---
-
-@router.message(Command("start"))
+@router.message(Command("start", "profile", "p"))
 async def start_handler(message: Message):
     user_id = message.from_user.id
-    # Регистрируем/проверяем пользователя
+    # Регистрируем/обновляем юзера
     await check_user(user_id, message.from_user.username, message.from_user.full_name)
-    # Сразу показываем профиль без выбора языка
-    await show_profile(message, user_id, "rus")
 
-
-async def show_profile(event: Message | CallbackQuery, user_id: int, lang: str = "rus", is_new_message: bool = False):
     user = await get_user_data(user_id)
-
-    emoji_prof = await format_emoji(1)  # Слот 1: 👋 Рука
+    emoji_prof = await format_emoji(1)
     cur_symbol = await get_currency_symbol()
 
-    name = event.from_user.first_name
     balance_val = user['balance'] if user else 0
     formatted_balance = f"{balance_val:,}".replace(',', ' ')
 
-    text = (f"{emoji_prof} Профиль {name}\n"
-            f"🆔 ID: <code>{user_id}</code>\n"
-            f"{cur_symbol} Баланс: <b>{formatted_balance}</b>")
+    # Текстовый профиль с перечнем команд вместо кнопок
+    text = (
+        f"{emoji_prof} <b>Профиль {message.from_user.first_name}</b>\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"{cur_symbol} Баланс: <b>{formatted_balance}</b>\n"
+        f"────────────────\n"
+        f"💳 <code>/deposit [сумма]</code> — Пополнить\n"
+        f"📝 <code>/history</code> — История переводов\n"
+        f"📊 <code>/stats</code> — Статистика бота\n"
+        f"🛡 <code>/status</code> — Статус аккаунта\n"
+        f"🆘 <code>/help</code> — Поддержка"
+    )
 
-    if isinstance(event, CallbackQuery) and not is_new_message:
-        try:
-            await event.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
-        except Exception:
-            await event.message.answer(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
-    else:
-        if isinstance(event, CallbackQuery):
-            await event.message.answer(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
-        else:
-            await event.answer(text, parse_mode="HTML", reply_markup=get_profile_kb(lang))
+    await message.answer(text, parse_mode="HTML")
 
-# --- СТАТИСТИКА ПОЛЬЗОВАТЕЛЕЙ ---
 
-@router.callback_query(F.data.startswith("user_list:"))
-async def show_user_list(callback: CallbackQuery):
-    lang = callback.data.split(":")[1]
+# --- СТАТИСТИКА (/stats) ---
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
     active, banned = await get_stats()
+    emoji_title = await format_emoji(2)
+    emoji_active = await format_emoji(3)
+    emoji_banned = await format_emoji(4)
 
-    emoji_title = await format_emoji(2)  # Слот 2: 🛡️ Щит
-    emoji_active = await format_emoji(3)  # Слот 3: 🟢 Зеленый
-    emoji_banned = await format_emoji(4)  # Слот 4: 🔴 Красный
-
-    txt = (f"{emoji_title} <b>Статистика пользователей:</b>\n"
-           f"{emoji_active} Количество активных: <b>{active}</b>\n"
-           f"{emoji_banned} Количество в бане: <b>{banned}</b>")
-
-    back_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back_to_profile:{lang}")
-    ]])
-    await callback.message.edit_text(txt, parse_mode="HTML", reply_markup=back_kb)
-    await callback.answer()
+    txt = (
+        f"{emoji_title} <b>Статистика:</b>\n"
+        f"{emoji_active} Активных: <b>{active}</b>\n"
+        f"{emoji_banned} В бане: <b>{banned}</b>"
+    )
+    await message.answer(txt, parse_mode="HTML")
 
 
-# --- ИСТОРИЯ ПЕРЕВОДОВ ---
+# --- СТАТУС (/status) ---
 
-@router.callback_query(F.data.startswith("my_transfers:"))
-async def show_transfers(callback: CallbackQuery):
-    lang = callback.data.split(":")[1]
-    user_id = callback.from_user.id
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    user = await get_user_data(message.from_user.id)
+    is_banned = user['is_banned'] if user and 'is_banned' in user.keys() else 0
+    emoji = await format_emoji(4 if is_banned else 3)
+
+    txt = "❌ <b>Ваш аккаунт заблокирован</b>" if is_banned else "✅ <b>Ваш аккаунт чист</b>"
+    await message.answer(f"{emoji} {txt}", parse_mode="HTML")
+
+
+# --- ИСТОРИЯ (/history) ---
+
+@router.message(Command("history"))
+async def cmd_history(message: Message):
+    user_id = message.from_user.id
     history = await get_history(user_id)
-    main_mention = get_mention(user_id, callback.from_user.first_name)
+    mention = get_mention(user_id, message.from_user.first_name)
 
     if not history:
-        content = f"{main_mention}, ваша история пуста."
-    else:
-        lines = [f"{main_mention} ваша история переводов:"]
-        for row in history:
-            amount = row['amount']
-            raw_time = row['timestamp']
-            try:
-                display_time = f"{raw_time[:5]} + {raw_time[-5:]}"
-            except:
-                display_time = raw_time
+        return await message.answer(f"{mention}, ваша история пуста.", parse_mode="HTML")
 
-            if row['from_user_id'] == user_id:
-                target = get_mention(row['to_user_id'], row['to_user_name'])
-                lines.append(f"➖ ({amount}) для {target} ({display_time})")
-            else:
-                target = get_mention(row['from_user_id'], row['from_user_name'])
-                lines.append(f"➕ ({amount}) от {target} ({display_time})")
-        content = "\n".join(lines)
+    lines = [f"📝 <b>История переводов {mention}:</b>"]
+    for row in history[:15]:  # Ограничим 15 записями для чистоты
+        amount = f"{row['amount']:,}".replace(',', ' ')
+        time = row['timestamp']
+        if row['from_user_id'] == user_id:
+            target = get_mention(row['to_user_id'], row['to_user_name'])
+            lines.append(f"➖ <code>{amount}</code> ➔ {target} | <small>{time}</small>")
+        else:
+            target = get_mention(row['from_user_id'], row['from_user_name'])
+            lines.append(f"➕ <code>{amount}</code> ⬅️ {target} | <small>{time}</small>")
 
-    back_btn = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back_to_profile:{lang}")
-    ]])
-    await callback.message.edit_text(content, parse_mode="HTML", reply_markup=back_btn)
-    await callback.answer()
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-# --- ПОПОЛНЕНИЕ И ОТМЕНА ---
+# --- ПОПОЛНЕНИЕ (/deposit сумма) ---
 
-@router.callback_query(F.data.startswith("deposit:"))
-async def deposit_start(callback: CallbackQuery, state: FSMContext):
-    lang = callback.data.split(":")[1]
-    await state.update_data(lang=lang)
-    txt = "Введите сумму (Stars):"
+@router.message(Command("deposit"))
+async def cmd_deposit(message: Message):
+    # Пытаемся взять сумму из аргумента команды: /deposit 100
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        return await message.answer(
+            "ℹ️ Используйте: <code>/deposit [сумма в Stars]</code>\nПример: <code>/deposit 50</code>",
+            parse_mode="HTML")
 
-    cancel_btn = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_deposit:{lang}")]])
+    stars = int(args[1])
+    if stars < 1:
+        return await message.answer("❌ Минимальная сумма — 1 Star")
 
-    await callback.message.edit_text(txt, reply_markup=cancel_btn)
-    await state.set_state(DepositState.waiting_for_amount)
-    await callback.answer()
+    cron_amount = stars * 2500
 
-
-@router.callback_query(F.data.startswith("cancel_deposit:"))
-async def cancel_deposit(callback: CallbackQuery, state: FSMContext):
-    lang = callback.data.split(":")[1]
-    data = await state.get_data()
-
-    if "invoice_msg_id" in data:
-        try:
-            await callback.bot.delete_message(callback.message.chat.id, data["invoice_msg_id"])
-        except Exception:
-            pass
-
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-    await state.clear()
-    await show_profile(callback, callback.from_user.id, lang, is_new_message=True)
-    await callback.answer()
-
-
-@router.message(DepositState.waiting_for_amount)
-async def send_invoice(message: Message, state: FSMContext):
-    if not message.text or not message.text.isdigit():
-        return await message.answer("Введите число!")
-
-    stars = int(message.text)
-    cron = stars * 2500
-
-    inv_msg = await message.answer_invoice(
-        title="Cron Recharge",
-        description=f"{stars} Stars ➜ {cron} cron",
-        prices=[LabeledPrice(label="XTR", amount=stars)],
-        provider_token="", currency="XTR", payload=f"stars_{stars}"
+    await message.answer_invoice(
+        title="Пополнение баланса",
+        description=f"К зачислению: {cron_amount:,} cron".replace(',', ' '),
+        prices=[LabeledPrice(label="Stars", amount=stars)],
+        provider_token="",  # Для Telegram Stars пусто
+        currency="XTR",
+        payload=f"stars_{stars}"
     )
-    await state.update_data(invoice_msg_id=inv_msg.message_id)
 
 
 @router.pre_checkout_query()
@@ -209,33 +156,13 @@ async def success_pay(message: Message):
     stars = message.successful_payment.total_amount
     cron = stars * 2500
     await add_balance(message.from_user.id, cron)
-    # Примечание: Убедись, что функция add_donation импортирована корректно
-    from database import add_donation
     await add_donation(message.from_user.id, message.successful_payment.telegram_payment_charge_id, cron, stars)
-    try:
-        await message.delete()
-    except:
-        pass
-    await message.answer(f"✅ +{cron:,} cron".replace(',', ' '))
+
+    await message.answer(f"✅ <b>Успешно!</b>\nЗачислено: +{cron:,} cron".replace(',', ' '), parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("back_to_profile:"))
-async def back_to_profile(callback: CallbackQuery):
-    lang = callback.data.split(":")[1]
-    await show_profile(callback, callback.from_user.id, lang)
-    await callback.answer()
+# --- ПОМОЩЬ ---
 
-
-@router.callback_query(F.data.startswith("check_status:"))
-async def check_status(callback: CallbackQuery):
-    lang = callback.data.split(":")[1]
-    user = await get_user_data(callback.from_user.id)
-    is_banned = user['is_banned'] if user and 'is_banned' in user.keys() else 0
-    emoji = await format_emoji(4 if is_banned else 3)
-
-    txt = "Блокировка активна" if is_banned else "Аккаунт чист"
-    back = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back_to_profile:{lang}")
-    ]])
-    await callback.message.edit_text(f"{emoji} {txt}", parse_mode="HTML", reply_markup=back)
-    await callback.answer()
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer("🆘 Поддержка: @hhikasi\n\nВсе команды бота доступны в <code>/start</code>", parse_mode="HTML")
